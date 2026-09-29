@@ -4,11 +4,14 @@ import { sessao } from './sessao.js';
 
 export const rotas = Router();
 /**
- * /status — a API usa para saber se o número está pareado antes de tentar
- * enviar. Sem isso, a API chamaria /enviar e receberia 503 a cada pedido feito
- * enquanto o Node estivesse desligado.
+ * /status - a API usa para saber se o numero esta pareado antes de tentar
+ * enviar, e o painel usa para mostrar qual numero esta conectado.
+ *
+ * Pede segredo. Este servico mora na pasta irma da API, no mesmo servidor: quem
+ * alcanca a porta e a propria maquina, e leitura de sessao e envio de mensagem
+ * nao podem ficar abertos para qualquer processo local.
  */
-rotas.get('/status', (_req, res) => {
+rotas.get('/status', verificarSegredo, (_req, res) => {
   res.json({
     pareado: sessao.estaConectado(),
     numero: sessao.numeroConectado(),
@@ -62,14 +65,13 @@ rotas.post('/enviar', verificarSegredo, async (req, res) => {
 });
 
 /**
- * /pareamento — devolve o QR em PNG base64, para a tela de cadastro.
+ * /pareamento - devolve o QR em PNG base64, para a tela de cadastro.
  *
- * Não pede segredo. Esta rota é lida por uma pessoa, na primeira vez, no
- * navegador dela, e o segredo vive no servidor da API — não no cadastro. Se
- * exigisse o segredo, a pessoa precisaria dele na mão, e ele acabaria no histórico
- * de quem fez o cadastro.
+ * Pede segredo pelo mesmo motivo do /status. O segredo nunca e digitado no
+ * navegador: a tela do painel fala com a API, e a API repassa o QR. Se esta
+ * rota fosse publica, qualquer processo local leria o QR do numero da loja.
  */
-rotas.get('/pareamento', async (_req, res) => {
+rotas.get('/pareamento', verificarSegredo, async (_req, res) => {
   if (sessao.estaConectado()) {
     return res.json({ pareado: true, numero: sessao.numeroConectado() });
   }

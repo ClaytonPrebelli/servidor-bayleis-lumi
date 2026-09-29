@@ -18,16 +18,18 @@ sem certificado.
 | Rota | Segredo | Para que serve |
 |---|---|---|
 | `GET /saude` | não | O processo está vivo |
-| `GET /status` | não | O número está pareado? Em que porta a API pergunta antes de tentar enviar |
+| `GET /status` | **sim** | O número está pareado? Diagnóstico do número e da sessão |
 | `POST /enviar` | **sim** | Envia uma mensagem |
-| `GET /pareamento` | não | Devolve o QR para a tela de cadastro |
+| `GET /pareamento` | **sim** | Devolve o QR para a tela de cadastro |
 
-`/pareamento` não pede segredo porque é lida por uma pessoa, na primeira vez, no
-navegador dela. Se pedisse, ela precisaria do segredo na mão — e ele acabaria no
-histórico de quem fez o cadastro.
+`/pareamento` e `/status` pedem segredo porque este serviço fica numa pasta
+irmã da API, no mesmo servidor: quem alcança a porta é a própria máquina. Sem
+segredo, qualquer processo local leria o QR do número da loja ou tentaria
+enviar mensagem como a empresa.
 
-`/status` também não pede: a API consulta periodicamente, e exigir segredo em
-consulta só adicionaria chance de a API parar de consultar por causa de um 401.
+O segredo nunca é digitado no navegador. A tela de cadastro do painel fala com a
+API, e a API repassa o QR — o segredo fica no servidor, fora do histórico de
+quem pareou.
 
 ## Configuração
 
@@ -89,13 +91,55 @@ curl -X POST http://127.0.0.1:3001/enviar \
 
 ## Instalação no servidor
 
-1. Instalar Node 20 ou superior
-2. Copiar o projeto para a pasta do serviço
-3. `npm ci --omit=dev`
-4. Instalar como serviço do Windows, para subir com a máquina e reconectar sozinho
+O servidor de produção só aceita **FTP**: não há console para instalar Node nem
+Task Scheduler para agendar início. Por isso o Node é **portátil**, e quem o
+sobe é a própria API.
 
-O passo 4 importa: rodando à mão, o processo morre no logout do servidor e a
-sessão do WhatsApp cai junto.
+### 1. Montar a pasta
+
+Baixe a versão **portátil** do Node 20 ou superior (`node-vXX-win-x64.zip`) e
+extraia `node.exe` para a pasta do serviço, junto do código:
+
+```
+whats.lumimakeup.com.br/
+  node.exe              <- da versão portátil do Node
+  src/
+  package.json
+  package-lock.json
+  node_modules/         <- 'npm ci --omit=dev' rodado na sua maquina
+  dados/                <- sessão; crie na mao, nao vai no Git
+```
+
+Rode `npm ci --omit=dev` na sua máquina e envie `node_modules` junto. Sem
+console no servidor, não há como instalar as dependências lá.
+
+### 2. Onde a pasta fica
+
+Pasta **irmã** da publicação da API:
+
+```
+api.lumimakeup.com.br/          <- publicação da API
+whats.lumimakeup.com.br/        <- este serviço
+```
+
+O mesmo formato de caminho relativo que o `ArmazenamentoDeImagens` já usa
+(`../imagens`).
+
+### 3. Quem sobe o Node
+
+A API, com `IniciarProcesso: true` em `ExternalServices:Baileys`. O supervisor:
+
+- sobe o `node.exe` apontando para `src/index.js`;
+- passa o segredo por **variável de ambiente**, nunca por argumento — argumento
+  de linha de comando aparece na lista de processos do Windows;
+- mantém a pasta `dados/` como pasta de trabalho, para a sessão sobreviver ao
+  recycle do pool do IIS;
+- vigia o processo e **sobe de novo** se ele morrer;
+- encerra o Node junto com a API, sem deixar processo órfão segurando a pasta.
+
+Em desenvolvimento o caminho é o contrário: `IniciarProcesso: false` e o Node
+roda na mão, com `npm run dev`. Sem isso, o supervisor subiria um segundo Node na
+mesma porta e um dos dois ficaria com `EADDRINUSE`.
 
 ## O que este serviço não faz
 

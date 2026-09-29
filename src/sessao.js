@@ -17,6 +17,7 @@ const pastaDeDados = process.env.PASTA_DE_DADOS ?? './dados';
 const silencioso = process.env.BAILEYS_SILENCIOSO === 'true';
 
 let conexao = null;
+let aberto = false;
 let qrAtual = null;
 let numeroAtual = null;
 let conectadoDesde = null;
@@ -46,8 +47,16 @@ function registrar(nivel, mensagem, extra = {}) {
 }
 
 export const sessao = {
+  /**
+   * Verdadeiro so depois que o WhatsApp disse "open".
+   *
+   * Nao pode ser `conexao !== null`: o socket existe desde o inicio, ainda
+   * conectando. Se /enviar respondesse "pareado" nesse intervalo, a API
+   * chamaria o envio e levaria 502, porque nao ha como escrever num socket
+   * que ainda nao tem sessao negotiateada.
+   */
   estaConectado() {
-    return conexao !== null;
+    return aberto;
   },
 
   numeroConectado() {
@@ -107,6 +116,7 @@ export const sessao = {
 
         if (connection === 'open') {
           qrAtual = null;
+          aberto = true;
           numeroAtual = numeroDoJid(socket.user?.id);
           conectadoDesde = new Date().toISOString();
           registrar('info', 'Numero pareado e conectado.', { numero: numeroAtual });
@@ -116,6 +126,7 @@ export const sessao = {
         if (connection === 'close') {
           const codigo = lastDisconnect?.error?.output?.statusCode;
           qrAtual = null;
+          aberto = false;
           numeroAtual = null;
           conexao = null;
           conectando = null;
@@ -150,8 +161,8 @@ export const sessao = {
    * faz parte do numero e nunca deve ser montado pela API.
    */
   async enviar(para, texto) {
-    if (!conexao) {
-      throw new Error('Sem conexao com o WhatsApp.');
+    if (!aberto || !conexao) {
+      throw new Error('Sem conexao aberta com o WhatsApp.');
     }
 
     const jid = `${String(para).replace(/\D/g, '')}@s.whatsapp.net`;
