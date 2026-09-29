@@ -39,17 +39,42 @@ const servidor = aplicativo.listen(porta, host, () => {
     mensagem: `whats-lumimakeup ouvindo em ${host}:${porta}`
   }));
 
-  // Inicia a sessao em segundo plano, para o servico subir mesmo que o QR ainda
-  // nao tenha sido lido. Sem isso, /pareamento nao responderia nada.
+  tentarIniciarSessao();
+});
+
+/**
+ * Inicia a sessao do WhatsApp, insistindo ate conseguir.
+ *
+ * A insistencia e' o que faz este servico se recuperar sozinho. O caso real:
+ * o Render subiu o servico antes de as variaveis de ambiente serem cadastradas,
+ * a sessao falhou na largada, e o servico ficou no ar sem WhatsApp e sem QR.
+ * Como o Render so le as variaveis no boot, so um reinicio resolveria - e a
+ * administradora veria "pareado: false" sem pista de que faltava reiniciar.
+ *
+ * Repetir resolve os dois casos: variavel cadastrada depois (o Render ainda
+ * precisa reiniciar o container, mas a partir dai o servico se sustenta) e API
+ * fora do ar por alguns minutos, que nao exige intervencao nenhuma.
+ *
+ * A espera cresce ate um teto. Intervalo fixo curto vira laco de tentativa que
+ * enche o log da hospedagem sem chance de dar certo.
+ */
+function tentarIniciarSessao(tentativa = 1) {
+  const esperaMaximaEmSegundos = 60;
+
   sessao.iniciar().catch(erro => {
+    const espera = Math.min(2 ** Math.min(tentativa, 6), esperaMaximaEmSegundos);
+
     console.error(JSON.stringify({
       em: new Date().toISOString(),
       nivel: 'erro',
-      mensagem: 'Falha ao iniciar a sessao do WhatsApp.',
+      mensagem: `Falha ao iniciar a sessao do WhatsApp. Nova tentativa em ${espera}s.`,
+      tentativa,
       erro: String(erro)
     }));
+
+    setTimeout(() => tentarIniciarSessao(tentativa + 1), espera * 1000).unref();
   });
-});
+}
 
 /**
  * Encerramento limpo.

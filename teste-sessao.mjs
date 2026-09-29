@@ -247,6 +247,73 @@ try {
   assert.equal(semSegredo.status, 401, 'sem segredo tem de dar 401');
   console.log('   confirmado: 401 sem segredo');
 
+  console.log('== 7. a retentativa se recupera de uma falha na partida ==');
+  // Este e o bug real que aconteceu: o Render subiu o servico antes das
+  // variaveis existirem, a sessao falhou, e o servico ficou no ar sem
+  // WhatsApp e sem QR - sem nunca tentar de novo. O painel mostrava
+  // "pareado: false" sem nenhuma pista.
+  //
+  // Aqui a API responde 500 na primeira chamada e so depois volta. O
+  // comportamento certo e o servico insistir e recuperar sozinho.
+  let chamadasQueFalharam = 0;
+  const apiQueFalhaDepois = createServer((req, res) => {
+    if (req.headers['x-segredo'] !== segredo) {
+      res.writeHead(401).end();
+
+      return;
+    }
+
+    if (chamadasQueFalharam < 2) {
+      chamadasQueFalharam += 1;
+      res.writeHead(500, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ mensagem: 'banco fora do ar' }));
+
+      return;
+    }
+
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ existe: false, versao: 0, credenciais: null, chaves: '{}' }));
+  });
+
+  const portaInstavel = 3197;
+  await new Promise(resolve => apiQueFalhaDepois.listen(portaInstavel, '127.0.0.1', resolve));
+
+  const instavel = spawn(process.execPath, ['src/index.js'], {
+    env: {
+      ...process.env,
+      PORT: '3196',
+      URL_DA_API: `http://127.0.0.1:${portaInstavel}`,
+      BAILEYS_SEGREDO_COMPARTILHADO: segredo,
+      BAILEYS_SILENCIOSO: 'false',
+      INTERVALO_DE_GRAVACAO_EM_MS: '1000'
+    },
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+
+  let saidaInstavel = '';
+  instavel.stdout.on('data', d => (saidaInstavel += d.toString()));
+  instavel.stderr.on('data', d => (saidaInstavel += d.toString()));
+
+  // Espera a retentativa: a espera cresce por tentativa, entao o limite
+  // cobre as duas primeiras.
+  await espera(
+    () => saidaInstavel.includes('Nova tentativa em'),
+    'primeira falha registrada com retentativa',
+    30000
+  );
+  console.log('   a falha foi registrada e a retentativa foi agendada');
+
+  await espera(
+    () => saidaInstavel.includes('Sem sessao no banco'),
+    'recuperou depois da falha',
+    60000
+  );
+  assert.ok(chamadasQueFalharam >= 2, 'a API foi consultada mais de uma vez');
+  console.log('   confirmado: recuperou sozinho depois da falha, sem reiniciar');
+
+  instavel.kill('SIGKILL');
+  apiQueFalhaDepois.close();
+
   console.log('\nTodos os passos passaram.');
 } finally {
   await limpar();

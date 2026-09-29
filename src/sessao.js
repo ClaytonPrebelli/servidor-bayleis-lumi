@@ -196,6 +196,17 @@ export const sessao = {
       });
     })();
 
+    // Libera o guard quando a tentativa falha.
+    //
+    // Sem isto, `conectando` fica apontando para uma promise rejeitada, e toda
+    // nova chamada a iniciar() devolveria exatamente a mesma rejeicao. A
+    // retentativa com espera existiria no papel e o WhatsApp nunca voltaria.
+    conectando = conectando.catch(erro => {
+      conectando = null;
+
+      throw erro;
+    });
+
     return conectando;
   },
 
