@@ -1,19 +1,20 @@
-import makeWASocket, { DisconnectReason, useMultiFileAuthState } from 'baileys';
+import makeWASocket, { DisconnectReason } from 'baileys';
 import QRCode from 'qrcode';
+import { sessaoNaApi } from './sessao-api.js';
 
 /**
  * Sessão do Baileys.
  *
- * Guarda a autenticação em disco, porque o número é da loja e a sessão não pode
- * ser refeita a cada reinício: refazer exigiria escanear QR de novo, e o
- * WhatsApp bloqueia QR repetido com frequência.
+ * A sessão fica no banco da API, e não em arquivo, porque este serviço roda no
+ * Render no plano gratuito, que não tem disco persistente: um arquivo se perde
+ * a cada sono do serviço, e refazer o pareamento exigiria QR novo — e o WhatsApp
+ * bloqueia QR repetido com frequência.
  *
  * Esta sessão é **somente envio**. Não marca mensagem como lida, não sincroniza
  * histórico e não processa mensagem recebida. A loja precisa avisar o cliente do
  * pedido; quem responde é a administradora, no WhatsApp dela.
  */
 
-const pastaDeDados = process.env.PASTA_DE_DADOS ?? './dados';
 const silencioso = process.env.BAILEYS_SILENCIOSO === 'true';
 
 let conexao = null;
@@ -117,10 +118,15 @@ export const sessao = {
     }
 
     conectando = (async () => {
-      const { state, saveCreds } = await useMultiFileAuthState(`${pastaDeDados}/autenticacao`);
+      // Carrega a sessao do banco antes de criar o socket. Sem sessao, o
+      // Baileys gera QR; com sessao, reconecta sozinho, e a loja nunca ve QR
+      // depois da primeira vez.
+      const jaPareado = await sessaoNaApi.carregar();
+
+      registrar('info', jaPareado ? 'Sessao restaurada do banco.' : 'Sem sessao no banco: gerando QR.');
 
       const socket = makeWASocket({
-        auth: state,
+        auth: sessaoNaApi.paraBaileys(),
         // O Baileys loga muito em info. Silencia-lo aqui e o que deixa o log
         // deste servico legivel: conexao, envio e erro, que sao os tres fatos
         // que importam.
@@ -140,9 +146,9 @@ export const sessao = {
 
       conexao = socket;
 
-      socket.ev.on('creds.update', saveCreds);
+      socket.ev.on('creds.update', credenciais => sessaoNaApi.marcarCredenciaisAlteradas(credenciais));
 
-      socket.ev.on('connection.update', ({ connection, lastDisconnect, qr }) => {
+      socket.ev.on('connection.update', async ({ connection, lastDisconnect, qr }) => {
         if (qr) {
           qrAtual = qr;
           registrar('info', 'QR disponivel. Abra a tela de pareamento.');
@@ -168,6 +174,11 @@ export const sessao = {
           // 401 e o codigo do WhatsApp para "desconectado de proposito", e nao
           // um erro. Tratar como falha derrubaria o servico a cada restart.
           if (codigo === DisconnectReason.loggedOut) {
+            // Apaga a sessao do banco. Sem isso o Node ficaria tentando
+            // reconectar com credenciais que a Meta invalidou, e nem QR nem
+            // envio voltariam: o numero ficaria preso fora do ar.
+            await sessaoNaApi.apagar();
+
             registrar('erro', 'Numero desconectado do WhatsApp. Pareie de novo com o QR; se nao funcionar, o numero pode estar banido.');
             return;
           }

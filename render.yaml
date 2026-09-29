@@ -1,0 +1,43 @@
+# Servico do Baileys no Render.
+#
+# Este arquivo descreve o servico para o Render montar sozinho. Com ele
+# ligado, o Render cria o servico e conecta na branch main a cada push, sem
+# precisar configurar nada na mao.
+#
+# IMPORTANTE: os valores de sync:false NAO sao substituidos aqui. Eles ficam
+# nas variaveis de ambiente do painel do Render, e e de la que sai o segredo.
+# Substituir segredo no arquivo seria a mesma falha de commitar chave no Git.
+
+services:
+  - type: web
+    name: whats-lumimakeup
+    runtime: docker
+
+    # Auto deploy: cada push na main vira um deploy. Foi o que voce configurou.
+    autoDeploy: true
+
+    branch: main
+
+    # Plano gratuito. E' o que permite o servico ficar no ar sem pagar.
+    plan: free
+
+    # O Render injeta PORT, e o servico ja le do ambiente.
+    healthCheckPath: /saude
+
+    envVars:
+      - key: NODE_ENV
+        value: production
+
+      - key: BAILEYS_SILENCIOSO
+        value: "true"
+
+      - key: URL_DA_API
+        # Valor fixo, e nao "fromService": a API da loja roda na NVA, nao no
+        # Render. O Render nao tem um servico para puxar a URL de.
+        value: https://api.lumimakeup.com.br
+
+      - key: BAILEYS_SEGREDO_COMPARTILHADO
+        sync: false
+
+      - key: INTERVALO_DE_GRAVACAO_EM_MS
+        value: "120000"

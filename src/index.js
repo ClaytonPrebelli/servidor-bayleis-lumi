@@ -1,6 +1,7 @@
 import express from 'express';
 import { rotas } from './rotas.js';
 import { sessao } from './sessao.js';
+import { sessaoNaApi } from './sessao-api.js';
 
 const porta = Number(process.env.PORT ?? 3001);
 
@@ -53,11 +54,26 @@ function encerrar(sinal) {
     mensagem: `Recebido ${sinal}. Encerrando.`
   }));
 
-  servidor.close(() => process.exit(0));
+  // Grava a sessao antes de sair. O Render da alguns segundos antes de matar
+  // o container, e e essa janela que salva o pareamento quando o servico
+  // reinicia: sem isso, as ultimas mudancas de chave se perderiam e a sessao
+  // recarregada ficaria incompleta.
+  sessaoNaApi.gravarPendentes()
+    .catch(erro => {
+      console.error(JSON.stringify({
+        em: new Date().toISOString(),
+        nivel: 'erro',
+        mensagem: 'Falha ao gravar a sessao no encerramento.',
+        erro: String(erro)
+      }));
+    })
+    .finally(() => {
+      servidor.close(() => process.exit(0));
 
-  // Se alguma conexao ficar presa, sair assim mesmo: um processo pendurado no
-  // Windows segura a pasta e trava o proximo deploy.
-  setTimeout(() => process.exit(0), 10000).unref();
+      // Se alguma conexao ficar presa, sair assim mesmo: um processo pendurado
+      // no Windows segura a pasta e trava o proximo deploy.
+      setTimeout(() => process.exit(0), 10000).unref();
+    });
 }
 
 process.on('SIGTERM', () => encerrar('SIGTERM'));
