@@ -6,13 +6,23 @@ import { sessaoNaApi } from './sessao-api.js';
 const porta = Number(process.env.PORT ?? 3001);
 
 /**
- * O servico escuta **so em localhost**.
+ * Endereco de escuta.
  *
- * Quem entra pela internet e o IIS, por HTTPS, com URL Rewrite apontando para
- * esta porta. O Node nao e' exposto: se ele escutasse em 0.0.0.0, qualquer um
- * que descobrisse a porta mandaria mensagem como a loja, sem passar pelo IIS e
- * sem certificado.
+ * 0.0.0.0 e' obrigatorio no Render: a plataforma so encaminha trafego para
+ * uma porta aberta em todas as interfaces. Escutar so em 127.0.0.1 deixava o
+ * servico no ar e inacessivel, e o log do Render repetia "No open ports
+ * detected on 0.0.0.0" sem nunca dizer o porque.
+ *
+ * Expor a porta nao torna o servico aberto: o Render terminate TLS e as rotas
+ * que importam - /status, /enviar e /pareamento - exigem o segredo
+ * compartilhado. A unica rota sem segredo e' /saude, que responde "esta no
+ * ar" e nada mais.
+ *
+ * HOST fica no ambiente para dar margem: em algum outro lugar pode ser preciso
+ * voltar a restringir a interface.
  */
+const host = process.env.HOST ?? '0.0.0.0';
+
 const aplicativo = express();
 
 aplicativo.use(express.json({ limit: '256kb' }));
@@ -23,10 +33,10 @@ aplicativo.get('/saude', (_req, res) => {
 
 aplicativo.use(rotas);
 
-const servidor = aplicativo.listen(porta, '127.0.0.1', () => {
+const servidor = aplicativo.listen(porta, host, () => {
   console.log(JSON.stringify({
     em: new Date().toISOString(),
-    mensagem: `whats-lumimakeup ouvindo em 127.0.0.1:${porta}`
+    mensagem: `whats-lumimakeup ouvindo em ${host}:${porta}`
   }));
 
   // Inicia a sessao em segundo plano, para o servico subir mesmo que o QR ainda

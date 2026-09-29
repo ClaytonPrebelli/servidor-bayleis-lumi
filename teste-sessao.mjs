@@ -197,6 +197,16 @@ try {
   await espera(() => saida.includes('ouvindo em'), 'servico no ar');
   console.log('   servico no ar');
 
+  console.log('== 1b. escuta em 0.0.0.0, e nao so em 127.0.0.1 ==');
+  // O Render so encaminha trafego para porta aberta em todas as interfaces.
+  // Escutar so em 127.0.0.1 deixa o servico no ar e inacessivel, e o Render
+  // so repete "No open ports detected" sem dizer o porque. Ja aconteceu.
+  assert.ok(
+    saida.includes('ouvindo em 0.0.0.0'),
+    `esperava 0.0.0.0 no log; veio: ${saida.split('\n')[0]}`
+  );
+  console.log('   confirmado: 0.0.0.0');
+
   console.log('== 2. a API foi consultada e ainda nao ha sessao ==');
   await espera(() => saida.includes('Nenhuma sessao no banco'), 'API consultada sem sessao');
   assert.equal(credenciaisNoBanco, null, 'nada deve ter sido gravado ainda');
