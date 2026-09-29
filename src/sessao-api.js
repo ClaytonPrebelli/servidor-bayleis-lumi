@@ -1,4 +1,5 @@
 import { Buffer } from 'node:buffer';
+import { initAuthCreds } from 'baileys';
 
 /**
  * Fala com a API para guardar e recuperar a sessao do WhatsApp.
@@ -27,6 +28,27 @@ import { Buffer } from 'node:buffer';
 const intervaloDeGravacaoEmMs = Number(process.env.INTERVALO_DE_GRAVACAO_EM_MS ?? 120000);
 
 /**
+ * Falha de configuracao: falta variavel de ambiente.
+ *
+ * E separada de outras falhas porque o conserto e diferente. Variavel de
+ * ambiente so existe no boot do processo: repetir a chamada nao resolve, e o
+ * log ia encher de "nova tentativa em 60s" sem chance de dar certo. Quem
+ * resolve e a pessoa, cadastrando a variavel no painel do Render.
+ */
+export class ErroDeConfiguracao extends Error {
+  constructor(quais) {
+    super(
+      `Faltam variaveis de ambiente: ${quais.join(', ')}. ` +
+      'Cadastre em Render > Environment e faca um novo deploy. Repetir nao resolve, ' +
+      'porque variavel de ambiente so e lida no boot do processo.'
+    );
+
+    this.name = 'ErroDeConfiguracao';
+    this.ausentes = quais;
+  }
+}
+
+/**
  * Le as configuracoes a cada uso, e nao no carregamento do modulo.
  *
  * Ler uma vez no topo e um erro silencioso: em teste, quem importa o modulo
@@ -34,14 +56,21 @@ const intervaloDeGravacaoEmMs = Number(process.env.INTERVALO_DE_GRAVACAO_EM_MS ?
  * nao diz nada. Aqui a falha vira a mensagem que diz o que falta.
  */
 function configuracao() {
+  const ausentes = [];
+
   const urlDaApi = (process.env.URL_DA_API ?? '').replace(/\/+$/, '');
   const segredo = process.env.BAILEYS_SEGREDO_COMPARTILHADO ?? '';
 
-  if (!urlDaApi || !segredo) {
-    throw new Error(
-      'URL_DA_API e BAILEYS_SEGREDO_COMPARTILHADO sao obrigatorios: e assim que o servico ' +
-      'guarda e recupera a sessao do WhatsApp.'
-    );
+  if (!urlDaApi) {
+    ausentes.push('URL_DA_API');
+  }
+
+  if (!segredo) {
+    ausentes.push('BAILEYS_SEGREDO_COMPARTILHADO');
+  }
+
+  if (ausentes.length > 0) {
+    throw new ErroDeConfiguracao(ausentes);
   }
 
   return { urlDaApi, segredo };
@@ -119,7 +148,16 @@ export class SessaoNaApi {
    */
   paraBaileys() {
     return {
-      creds: this.credenciais,
+      // Credenciais completas, nunca objeto vazio e nunca null.
+      //
+      // Numa sessao nova, o handshake Noise precisa do noiseKey para processar
+      // a resposta do WhatsApp. Sem ele, o socket abre e fecha em segundos com
+      // "error in validating connection", e o QR nunca aparece. Com null, o
+      // processo morria antes disso, lendo 'me' de um objeto inexistente.
+      //
+      // Quem gera essas chaves e o proprio Baileys, em initAuthCreds(). Gerar
+      // aqui seria reinventar um crypto delicateo na mao.
+      creds: this.credenciais ?? initAuthCreds(),
 
       keys: {
         get: async (tipo, id) => {
@@ -148,7 +186,9 @@ export class SessaoNaApi {
 
   /** O Baileys chama isto a cada mudanca de credencial. */
   marcarCredenciaisAlteradas(credenciais) {
-    this.credenciais = credenciais;
+    // Guarda objeto, nunca null. Um null aqui voltaria para o Baileys e
+    // derrubaria o processo no mesmo lugar, num ciclo seguinte.
+    this.credenciais = credenciais ?? {};
     this.credenciaisAlteradas = true;
     this.marcarGravacao();
   }

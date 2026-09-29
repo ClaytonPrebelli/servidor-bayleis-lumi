@@ -1,7 +1,7 @@
 import express from 'express';
 import { rotas } from './rotas.js';
 import { sessao } from './sessao.js';
-import { sessaoNaApi } from './sessao-api.js';
+import { sessaoNaApi, ErroDeConfiguracao } from './sessao-api.js';
 
 const porta = Number(process.env.PORT ?? 3001);
 
@@ -43,25 +43,63 @@ const servidor = aplicativo.listen(porta, host, () => {
 });
 
 /**
+ * Erro que o Baileys lanca em um tick interno nao passa pelo catch da
+ * sessao, e uma promessa rejeitada sem tratador mata o processo.
+ *
+ * O sintoma no Render era um laco: o servico subia, gerava o erro, morria, e
+ * o Render reiniciava - milhares de vezes, sem chance de avancar. O WhatsApp
+ * ficava indisponivel e o log so mostrava o mesmo erro repetido.
+ *
+ * O guard nao esconde o problema: registra o que aconteceu e deixa o servico
+ * vivo, com /saude respondendo, para o diagnostico continuar possivel.
+ */
+process.on('unhandledRejection', motivo => {
+  console.error(JSON.stringify({
+    em: new Date().toISOString(),
+    nivel: 'erro',
+    mensagem: 'Promessa rejeitada sem tratador. O servico continua no ar; o WhatsApp pode nao funcionar.',
+    erro: String(motivo)
+  }));
+});
+
+process.on('uncaughtException', erro => {
+  console.error(JSON.stringify({
+    em: new Date().toISOString(),
+    nivel: 'erro',
+    mensagem: 'Excecao fora de qualquer promessa. O servico continua no ar.',
+    erro: String(erro)
+  }));
+});
+
+/**
  * Inicia a sessao do WhatsApp, insistindo ate conseguir.
  *
- * A insistencia e' o que faz este servico se recuperar sozinho. O caso real:
- * o Render subiu o servico antes de as variaveis de ambiente serem cadastradas,
- * a sessao falhou na largada, e o servico ficou no ar sem WhatsApp e sem QR.
- * Como o Render so le as variaveis no boot, so um reinicio resolveria - e a
- * administradora veria "pareado: false" sem pista de que faltava reiniciar.
+ * A insistencia e' o que faz este servico se recuperar sozinho quando a API
+ * esta fora do ar por alguns minutos - caso que se resolve sozinho e nao exige
+ * intervencao nenhuma.
  *
- * Repetir resolve os dois casos: variavel cadastrada depois (o Render ainda
- * precisa reiniciar o container, mas a partir dai o servico se sustenta) e API
- * fora do ar por alguns minutos, que nao exige intervencao nenhuma.
- *
- * A espera cresce ate um teto. Intervalo fixo curto vira laco de tentativa que
- * enche o log da hospedagem sem chance de dar certo.
+ * Falta de variavel de ambiente e' o oposto: so e lida no boot do processo,
+ * entao repetir a chamada nao resolve, e transformava o log em laco de
+ * "nova tentativa em 60s" sem chance de dar certo. Nesses casos o servico
+ * registra o que falta uma vez e espera a pessoa corrigir no painel.
  */
+const esperaMaximaEmSegundos = 60;
+
 function tentarIniciarSessao(tentativa = 1) {
-  const esperaMaximaEmSegundos = 60;
 
   sessao.iniciar().catch(erro => {
+    if (erro instanceof ErroDeConfiguracao) {
+      console.error(JSON.stringify({
+        em: new Date().toISOString(),
+        nivel: 'erro',
+        mensagem: erro.message,
+        faltando: erro.ausentes,
+        orientacao: 'Render > Environment > Add Environment Variable, e depois um novo deploy.'
+      }));
+
+      return;
+    }
+
     const espera = Math.min(2 ** Math.min(tentativa, 6), esperaMaximaEmSegundos);
 
     console.error(JSON.stringify({
