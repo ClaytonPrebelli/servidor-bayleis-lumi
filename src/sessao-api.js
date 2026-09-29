@@ -131,8 +131,8 @@ export class SessaoNaApi {
     }
 
     this.versao = corpo.versao ?? 0;
-    this.credenciais = corpo.credenciais ? JSON.parse(corpo.credenciais) : null;
-    this.chaves = new Map(Object.entries(corpo.chaves ? JSON.parse(corpo.chaves) : {}));
+    this.credenciais = lerCredenciais(corpo.credenciais);
+    this.chaves = new Map(Object.entries(lerChaves(corpo.chaves)));
 
     registrar('info', 'Sessao carregada do banco.', { versao: this.versao, chaves: this.chaves.size });
 
@@ -184,11 +184,17 @@ export class SessaoNaApi {
     };
   }
 
-  /** O Baileys chama isto a cada mudanca de credencial. */
-  marcarCredenciaisAlteradas(credenciais) {
-    // Guarda objeto, nunca null. Um null aqui voltaria para o Baileys e
-    // derrubaria o processo no mesmo lugar, num ciclo seguinte.
-    this.credenciais = credenciais ?? {};
+  /**
+   * O Baileys chama isto a cada mudanca de credencial.
+   *
+   * FUSAO, E NAO SUBSTITUICAO. O evento creds.update chega com so os campos que
+   * mudaram. Substituir o objeto inteiro perdia noiseKey, signedPreKey e
+   * signalIdentityKey na primeira atualizacao parcial, e a sessao gravada ficava
+   * sem as chaves de que o handshake precisa. O sintoma era o servico cair a
+   * cada 3 segundos, sem QR nunca.
+   */
+  marcarCredenciaisAlteradas(alteracoes) {
+    this.credenciais = { ...(this.credenciais ?? {}), ...(alteracoes ?? {}) };
     this.credenciaisAlteradas = true;
     this.marcarGravacao();
   }
@@ -247,8 +253,8 @@ export class SessaoNaApi {
         headers: { 'x-segredo': segredo, 'content-type': 'application/json' },
         body: JSON.stringify({
           versaoEsperada: this.versao,
-          credenciais: JSON.stringify(this.credenciais),
-          chaves: JSON.stringify(alterados)
+          credenciais: serializarCredenciais(this.credenciais),
+          chaves: serializarChaves(alterados)
         })
       });
 
@@ -331,5 +337,65 @@ export class SessaoNaApi {
  * da sessao em memoria, e a gravacao dexitual iria para o objeto errado.
  */
 export const sessaoNaApi = new SessaoNaApi();
+
+/**
+ * JSON que preserva Buffer.
+ *
+ * As chaves de criptografia do Baileys sao Buffer, e Buffer nao sobrevive a um
+ * JSON. O JSON.stringify transforma em {"type":"Buffer","data":[...]} e o
+ * parse devolve um objeto comum, nao um Buffer. O handshake Noise opera sobre
+ * bytes: com objeto no lugar do Buffer, a conexao fecha em segundos e o
+ * sintoma e "error in validating connection", sem nenhuma pista de que o
+ * problema era a serializacao.
+ *
+ * O marcador abaixo existe para reidratar o Buffer na volta. Um campo que
+ * happen de ser {tipo:'Buffer'} vira Buffer tambem, o que recupera sessoes
+ * gravadas antes desta correcao.
+ */
+const MARCADOR = '__bytesBuffer';
+
+function bufferParaJson(chave, valor) {
+  if (Buffer.isBuffer(valor)) {
+    return { [MARCADOR]: valor.toString('base64') };
+  }
+
+  // Uint8Array e ArrayBuffer aparecem em campos binarios de versoes mais
+  // novas do Baileys.
+  if (valor instanceof Uint8Array) {
+    return { [MARCADOR]: Buffer.from(valor).toString('base64') };
+  }
+
+  return valor;
+}
+
+function jsonParaBuffer(chave, valor) {
+  if (valor && typeof valor === 'object' && !Array.isArray(valor)) {
+    if (typeof valor[MARCADOR] === 'string') {
+      return Buffer.from(valor[MARCADOR], 'base64');
+    }
+
+    if (valor.type === 'Buffer' && Array.isArray(valor.data)) {
+      return Buffer.from(valor.data);
+    }
+  }
+
+  return valor;
+}
+
+export function serializarCredenciais(credenciais) {
+  return JSON.stringify(credenciais, bufferParaJson);
+}
+
+export function lerCredenciais(texto) {
+  return texto ? JSON.parse(texto, jsonParaBuffer) : null;
+}
+
+export function serializarChaves(objeto) {
+  return JSON.stringify(objeto, bufferParaJson);
+}
+
+export function lerChaves(texto) {
+  return texto ? JSON.parse(texto, jsonParaBuffer) : {};
+}
 
 export { Buffer };

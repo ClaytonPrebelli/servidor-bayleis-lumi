@@ -25,6 +25,15 @@ let conectadoDesde = null;
 let ultimoEnvioEm = null;
 let conectando = null;
 
+/**
+ * Quantas quedas ja aconteceram sem sucesso no meio.
+ *
+ * Zera quando a conexao abre. E o que faz a espera crescer: reconectar sempre
+ * no mesmo intervalo curto e o que o WhatsApp pune, com recusa por excesso de
+ * tentativas.
+ */
+let reconnectando = 0;
+
 const numeroDoJid = jid => (jid ? jid.split('@')[0] : null);
 
 /**
@@ -157,6 +166,9 @@ export const sessao = {
         if (connection === 'open') {
           qrAtual = null;
           aberto = true;
+          // Zera a espera crescente: a conexao voltou, e a proxima queda e um
+          // evento novo, nao continuacao desta.
+          reconnectando = 0;
           numeroAtual = numeroDoJid(socket.user?.id);
           conectadoDesde = new Date().toISOString();
           registrar('info', 'Numero pareado e conectado.', { numero: numeroAtual });
@@ -185,13 +197,25 @@ export const sessao = {
 
           registrar('aviso', 'Conexao caiu. Reconectando.', { codigo });
 
-          // Espera antes de reconectar: sem isso, queda de rede vira laco de
-          // reconexao que derruba o processo.
+          // Espera CRESCENTE, e nao um intervalo fixo.
+          //
+          // Reconectar a cada 3 segundos martela o WhatsApp: o IP do Render
+          // comeca a ser recusado, e o servico cai cada vez mais rapido ate
+          // nenhum QR sair. Foi o que aconteceu - o log mostrava o ciclo de 3
+          // em 3 segundos e o QR nunca chegava.
+          //
+          // O primeiro intervalo e curto so uma vez por queda: logo depois do
+          // restart a conexao cai por natureza mesma, e esperar 120s atrasaria
+          // o retorno sem motivo.
+          const esperaEmSegundos = reconnectando++ === 0 ? 3 : Math.min(3 * 2 ** (reconectando - 1), 120);
+
+          registrar('aviso', `Nova tentativa de conexao em ${esperaEmSegundos}s.`);
+
           setTimeout(() => {
             sessao.iniciar().catch(erro => {
               registrar('erro', 'Falha ao reconectar.', { erro: String(erro) });
             });
-          }, 3000);
+          }, esperaEmSegundos * 1000);
         }
       });
     })();

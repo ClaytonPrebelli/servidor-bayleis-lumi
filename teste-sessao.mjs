@@ -314,6 +314,50 @@ try {
   instavel.kill('SIGKILL');
   apiQueFalhaDepois.close();
 
+  console.log('== 8. Buffer sobrevive a ida e volta pelo banco ==');
+  // As chaves de criptografia do Baileys sao Buffer. Um JSON.stringify comum
+  // as vira {"type":"Buffer","data":[...]}, e o parse devolve objeto comum, nao
+  // Buffer. O handshake Noise opera sobre bytes: com objeto no lugar, a
+  // conexao fecha em segundos e o sintoma e "error in validating connection",
+  // sem nenhuma pista de que o problema era a serializacao.
+  const { serializarCredenciais, lerCredenciais } = await import('./src/sessao-api.js');
+  const { Buffer: bufferDoNode } = await import('node:buffer');
+
+  const credenciaisComBuffer = {
+    noiseKey: { public: bufferDoNode.from([1, 2, 3, 4]), private: bufferDoNode.from([5, 6, 7, 8]) },
+    registrationId: 12345,
+    me: { id: '5515999999999:1@s.whatsapp.net', name: 'Lumi Makeup' }
+  };
+
+  const texto = serializarCredenciais(credenciaisComBuffer);
+  const lido = lerCredenciais(texto);
+
+  assert.ok(Buffer.isBuffer(lido.noiseKey.public), 'noiseKey.public precisa voltar como Buffer');
+  assert.ok(Buffer.isBuffer(lido.noiseKey.private), 'noiseKey.private precisa voltar como Buffer');
+  assert.deepEqual(
+    [...lido.noiseKey.public],
+    [1, 2, 3, 4],
+    'os bytes precisam voltar iguais'
+  );
+  assert.equal(lido.registrationId, 12345, 'campo simples preservado');
+  assert.equal(lido.me.id, '5515999999999:1@s.whatsapp.net', 'me preservado');
+  console.log('   confirmado: Buffer e campos simples voltaram intactos');
+
+  console.log('== 9. atualizacao parcial nao apaga as chaves base ==');
+  // O evento creds.update chega so com o que mudou. Substituir o objeto
+  // inteiro perdia noiseKey e signedPreKey, e a sessao gravada ficava sem as
+  // chaves de que o handshake precisa. Era o que causava a queda a cada 3s.
+  const sessaoDeTeste = new (await import('./src/sessao-api.js')).SessaoNaApi();
+
+  sessaoDeTeste.marcarCredenciaisAlteradas({ noiseKey: { public: bufferDoNode.from([9]) } });
+  sessaoDeTeste.marcarCredenciaisAlteradas({ registrationId: 999 });
+  sessaoDeTeste.marcarCredenciaisAlteradas({ me: { id: '5515999999999:1@s.whatsapp.net' } });
+
+  assert.ok(sessaoDeTeste.credenciais.noiseKey, 'noiseKey sobreviveu as atualizacoes seguintes');
+  assert.equal(sessaoDeTeste.credenciais.registrationId, 999, 'a ultima atualizacao venceu');
+  assert.ok(sessaoDeTeste.credenciais.me, 'me foi preservado');
+  console.log('   confirmado: fusao preservou as chaves e aceitou a atualizacao mais recente');
+
   console.log('\nTodos os passos passaram.');
 } finally {
   await limpar();
