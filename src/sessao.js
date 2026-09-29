@@ -26,6 +26,36 @@ let conectando = null;
 
 const numeroDoJid = jid => (jid ? jid.split('@')[0] : null);
 
+/**
+ * Logger mudo com a interface que o Baileys espera.
+ *
+ * O Baileys e' do pino e chama logger.child({ class }) e os metodos de nivel.
+ * Passar um objeto simples derruba a sessao na largada. Aqui child() devolve o
+ * proprio logger, entao o silencio se propaga para os filhos que o Baileys cria.
+ *
+ * Os erros de verdade nao sao engolidos: quem falha e o proprio envio, e ele
+ * devolve 502 com a mensagem. O que o Baileys chama de erro e o historico
+ * interno do protocolo, que nao ajuda ninguem aqui.
+ */
+function loggerSilencioso() {
+  const naoFazNada = () => {};
+
+  const logger = {
+    level: 'silent',
+    trace: naoFazNada,
+    debug: naoFazNada,
+    info: naoFazNada,
+    warn: naoFazNada,
+    error: naoFazNada,
+    fatal: naoFazNada,
+    silent: naoFazNada
+  };
+
+  logger.child = () => logger;
+
+  return logger;
+}
+
 /** Log simples, sem dependencia extra: o Baileys e' barulhento e o nivel dele fica separado. */
 function registrar(nivel, mensagem, extra = {}) {
   if (silencioso) {
@@ -91,11 +121,15 @@ export const sessao = {
 
       const socket = makeWASocket({
         auth: state,
-        printQRInTerminal: true,
         // O Baileys loga muito em info. Silencia-lo aqui e o que deixa o log
         // deste servico legivel: conexao, envio e erro, que sao os tres fatos
         // que importam.
-        logger: { level: 'silent', child: { level: 'silent' } },
+        //
+        // Precisa ser a interface do pino, nao um objeto qualquer: o Baileys
+        // chama logger.child(...) e os metodos de log. Passar { level, child:
+        // { level } } derruba a sessao na largada com "logger.child is not a
+        // function", e o servico sobe sem WhatsApp nenhum.
+        logger: loggerSilencioso(),
         // Le e nao. E o que mantem a loja sem superficie de leitura: sem marcar
         // como lida e sem sincronizar historico, este servico nao ve conversa
         // nenhuma.
