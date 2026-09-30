@@ -42,6 +42,15 @@ let reconnectando = 0;
  */
 let ultimoInicioDeConexao = 0;
 
+/**
+ * Ultimo codigo com que o WhatsApp fechou a conexao.
+ *
+ * Fica em escopo de modulo porque o log de "Conexao caiu" e escrito numa
+ * funcao separada do tratamento do evento. Perder o codigo faria o log dizer
+ * so "caiu", e codigo e o que distingue falha de rede de recusa do numero.
+ */
+let ultimoCodigoDeDesconexao = null;
+
 const numeroDoJid = jid => (jid ? jid.split('@')[0] : null);
 
 /**
@@ -165,7 +174,46 @@ export const sessao = {
 
       socket.ev.on('creds.update', credenciais => sessaoNaApi.marcarCredenciaisAlteradas(credenciais));
 
-      socket.ev.on('connection.update', async ({ connection, lastDisconnect, qr }) => {
+      // Tudo dentro do try, e nao so o agendamento do reconnect.
+      //
+      // Este handler e' a unica coisa que mantem o WhatsApp vivo: e ele quem
+      // reagenda a proxima tentativa. Um erro de contabilidade aqui - por
+      // exemplo ler um contador antes da declaracao - virava promessa rejeitada
+      // e matava justamente a reconexao que ia consertar. O catch garante que
+      // a proxima tentativa aconteca mesmo assim, e o log diz o que houve.
+      socket.ev.on('connection.update', evento => {
+        tratarAtualizacaoDeConexao(evento).catch(erro => {
+          registrar('erro', 'Falha ao tratar a atualizacao de conexao.', { erro: String(erro) });
+
+          try {
+            agendarReconexao();
+          } catch (erroInterno) {
+            registrar('erro', 'Falha ao agendar a reconexao.', { erro: String(erroInterno) });
+          }
+        });
+      });
+
+      function agendarReconexao() {
+        registrar('aviso', 'Conexao caiu. Reconectando.', { codigo: ultimoCodigoDeDesconexao });
+
+        // Espera CRESCENTE, e nao um intervalo fixo. Reconectar sempre no mesmo
+        // intervalo curto e o que o WhatsApp pune, com recusa por excesso de
+        // tentativas. Foi o que aconteceu: o ciclo de 3 em 3 segundos esgotou a
+        // paciencia do WhatsApp e o pareamento passou a ser recusado.
+        const esperaEmSegundos = reconnectando++ === 0
+          ? 3
+          : Math.min(3 * 2 ** (reconnectando - 1), 120);
+
+        registrar('aviso', `Nova tentativa de conexao em ${esperaEmSegundos}s.`);
+
+        setTimeout(() => {
+          sessao.iniciar().catch(erro => {
+            registrar('erro', 'Falha ao reconectar.', { erro: String(erro) });
+          });
+        }, esperaEmSegundos * 1000);
+      }
+
+      async function tratarAtualizacaoDeConexao({ connection, lastDisconnect, qr }) {
         if (qr) {
           qrAtual = qr;
           registrar('info', 'QR disponivel. Abra a tela de pareamento.');
@@ -184,7 +232,7 @@ export const sessao = {
         }
 
         if (connection === 'close') {
-          const codigo = lastDisconnect?.error?.output?.statusCode;
+          ultimoCodigoDeDesconexao = lastDisconnect?.error?.output?.statusCode;
           qrAtual = null;
           aberto = false;
           numeroAtual = null;
@@ -193,7 +241,7 @@ export const sessao = {
 
           // 401 e o codigo do WhatsApp para "desconectado de proposito", e nao
           // um erro. Tratar como falha derrubaria o servico a cada restart.
-          if (codigo === DisconnectReason.loggedOut) {
+          if (ultimoCodigoDeDesconexao === DisconnectReason.loggedOut) {
             // Apaga a sessao do banco. Sem isso o Node ficaria tentando
             // reconectar com credenciais que a Meta invalidou, e nem QR nem
             // envio voltariam: o numero ficaria preso fora do ar.
@@ -203,30 +251,11 @@ export const sessao = {
             return;
           }
 
-          registrar('aviso', 'Conexao caiu. Reconectando.', { codigo });
-
-          // Espera CRESCENTE, e nao um intervalo fixo.
-          //
-          // Reconectar a cada 3 segundos martela o WhatsApp: o IP do Render
-          // comeca a ser recusado, e o servico cai cada vez mais rapido ate
-          // nenhum QR sair. Foi o que aconteceu - o log mostrava o ciclo de 3
-          // em 3 segundos e o QR nunca chegava.
-          //
-          // O primeiro intervalo e curto so uma vez por queda: logo depois do
-          // restart a conexao cai por natureza mesma, e esperar 120s atrasaria
-          // o retorno sem motivo.
-          const esperaEmSegundos = reconnectando++ === 0 ? 3 : Math.min(3 * 2 ** (reconectando - 1), 120);
-
-          registrar('aviso', `Nova tentativa de conexao em ${esperaEmSegundos}s.`);
-
-          setTimeout(() => {
-            sessao.iniciar().catch(erro => {
-              registrar('erro', 'Falha ao reconectar.', { erro: String(erro) });
-            });
-          }, esperaEmSegundos * 1000);
+          agendarReconexao();
         }
-      });
+      }
     })();
+
 
     // Libera o guard quando a tentativa falha.
     //
