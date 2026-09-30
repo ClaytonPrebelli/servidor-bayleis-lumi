@@ -314,6 +314,28 @@ export const sessao = {
   },
 
   /**
+   * Espera o QR aparecer, ate um limite.
+   *
+   * Forcar a reconexao derruba o socket, e o WhatsApp so responde com QR novo
+   * alguns segundos depois. Ler na hora devolvia vazio, e o botao "Gerar novo QR"
+   * parecia nao funcionar. A tela espera ate este limite e so então mostra o
+   * aviso de "clique de novo".
+   */
+  async aguardarQr(limiteEmMs = 12000) {
+    const inicio = Date.now();
+
+    while (Date.now() - inicio < limiteEmMs) {
+      if (qrAtual !== null) {
+        return QRCode.toDataURL(qrAtual, { margin: 1, width: 320 });
+      }
+
+      await new Promise(resolve => setTimeout(resolve, 200));
+    }
+
+    return null;
+  },
+
+  /**
    * Forca uma nova tentativa de conexao agora.
    *
    * Zera a espera crescente e derruba a conexao atual, se houver. Sem isso, o
@@ -323,6 +345,10 @@ export const sessao = {
    * A trava de intervalo protege o numero. Criar uma conexao por clique e o
    * caminho curto para o WhatsApp recusar o pareamento, que foi o que aconteceu
    * com a reconexao fixa de 3 segundos.
+   *
+   * Devolve o que o chamador precisa saber sem esperar: o QR chega pelo evento
+   * de conexao, alguns segundos depois. E por isso que a espera e' assincrona
+   * e a tela recarrega.
    */
   reconectar(intervaloMinimoEmSegundos = 20) {
     const agoraEmSegundos = Math.round(Date.now() / 1000);
@@ -337,6 +363,9 @@ export const sessao = {
 
     ultimoInicioDeConexao = agoraEmSegundos;
     reconnectando = 0;
+    // Derruba o QR anterior: ele ja expirou ou foi recusado, e mostrar um QR
+    // velho faz a leitura falhar sem nenhum motivo visivel.
+    qrAtual = null;
 
     // Derruba a conexao pendente, se houver. O handler de 'close' agenda a
     // reconexao; zerar o contador antes garante a espera curta.

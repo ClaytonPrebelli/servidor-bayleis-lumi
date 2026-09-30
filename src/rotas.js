@@ -106,14 +106,25 @@ rotas.get('/pareamento', verificarSegredo, async (_req, res) => {
  */
 rotas.post('/pareamento/reconectar', verificarSegredo, async (_req, res) => {
   if (sessao.estaConectado()) {
-    return res.json({ pareado: true, numero: sessao.numeroConectado(), qr: null });
+    return res.json({ pareado: true, numero: sessao.numeroConectado() });
   }
 
   const resultado = sessao.reconectar();
 
+  // Espera o QR aparecer, em vez de ler na hora.
+  //
+  // Forcar derruba o socket, e o WhatsApp responde com QR novo alguns segundos
+  // depois. Ler imediatamente devolvia vazio, e o botao parecia quebrado: a
+  // tela recebia "sem QR" logo depois de o usuario pedir um QR novo.
+  //
+  // O que sair daqui precisa ser PNG em base64, e nao a string bruta que o
+  // celular consome. Entregar o texto cru fazia o <img src> receber um texto, a
+  // imagem nao carregava, e a tela mostrava so o texto alternativo.
+  const qr = await sessao.aguardarQr();
+
   res.json({
     pareado: false,
-    qr: resultado.qr,
+    qr,
     aguardandoSegundos: resultado.aguardandoSegundos
   });
 });
