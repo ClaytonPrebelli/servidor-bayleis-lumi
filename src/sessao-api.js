@@ -147,17 +147,23 @@ export class SessaoNaApi {
    * mensagem em uma ida e volta pela rede.
    */
   paraBaileys() {
+    // As credenciais iniciais precisam ser GUARDADAS, e nao so entregues.
+    //
+    // Este era o bug que faltava. As chaves eram geradas aqui e devolvidas ao
+    // Baileys, mas ficavam fora deste objeto. Quando o creds.update chegava
+    // com so os campos alterados, a fusao partia de null e produzia uma sessao
+    // com account, me e platform - e sem noiseKey, sem signedPreKey, sem
+    // signalIdentityKey. Era exatamente o que aparecia no banco, e a sessao
+    // salva nao conseguia fazer o handshake: o servico carregava, caia, e
+    // repetia para sempre.
+    if (!this.credenciais) {
+      this.credenciais = initAuthCreds();
+    }
+
     return {
-      // Credenciais completas, nunca objeto vazio e nunca null.
-      //
-      // Numa sessao nova, o handshake Noise precisa do noiseKey para processar
-      // a resposta do WhatsApp. Sem ele, o socket abre e fecha em segundos com
-      // "error in validating connection", e o QR nunca aparece. Com null, o
-      // processo morria antes disso, lendo 'me' de um objeto inexistente.
-      //
-      // Quem gera essas chaves e o proprio Baileys, em initAuthCreds(). Gerar
-      // aqui seria reinventar um crypto delicateo na mao.
-      creds: this.credenciais ?? initAuthCreds(),
+      // Nunca null, e nunca objeto vazio: o Baileys le creds.me logo apos
+      // criar o socket, e o handshake Noise precisa do noiseKey.
+      creds: this.credenciais,
 
       keys: {
         get: async (tipo, id) => {

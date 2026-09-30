@@ -358,6 +358,41 @@ try {
   assert.ok(sessaoDeTeste.credenciais.me, 'me foi preservado');
   console.log('   confirmado: fusao preservou as chaves e aceitou a atualizacao mais recente');
 
+  console.log('== 10. as chaves base vao para o banco, e nao so as alteracoes ==');
+  // O bug que faltava. As credenciais iniciais eram geradas e entregues ao
+  // Baileys, mas nao guardadas neste objeto. O creds.update chega parcial, a
+  // fusao partia de null, e o que ia para o banco era so account, me e
+  // platform. A sessao salva ficava sem noiseKey e sem signedPreKey, e no
+  // carregamento seguinte o handshake nao fechava: o servico caia e repetia
+  // para sempre, parecendo problema de rede.
+  const sessaoNova = new (await import('./src/sessao-api.js')).SessaoNaApi();
+
+  sessaoNova.paraBaileys();
+
+  assert.ok(sessaoNova.credenciais, 'as credenciais iniciais precisam ser guardadas');
+  assert.ok(sessaoNova.credenciais.noiseKey, 'noiseKey inicial tem de estar guardado');
+  assert.ok(sessaoNova.credenciais.signedPreKey, 'signedPreKey inicial tem de estar guardado');
+  assert.ok(sessaoNova.credenciais.signedIdentityKey, 'signedIdentityKey inicial tem de estar guardado');
+  assert.ok(sessaoNova.credenciais.registrationId, 'registrationId inicial tem de estar guardado');
+  console.log('   confirmado: as chaves base foram guardadas');
+
+  const ruido = sessaoNova.marcarCredenciaisAlteradas({ me: { id: '5515999999999:1@s.whatsapp.net' } });
+  const aposParcial = sessaoNova.credenciais;
+
+  assert.ok(aposParcial.noiseKey, 'noiseKey sobreviveu a atualizacao parcial');
+  assert.ok(aposParcial.signedPreKey, 'signedPreKey sobreviveu a atualizacao parcial');
+  assert.ok(aposParcial.me, 'a atualizacao parcial foi aceita');
+
+  // E o que realmente vai para o banco.
+  const gravado = serializarCredenciais(aposParcial);
+  const relido = lerCredenciais(gravado);
+
+  assert.ok(relido.noiseKey, 'noiseKey chega ao banco');
+  assert.ok(relido.signedPreKey, 'signedPreKey chega ao banco');
+  assert.ok(relido.registrationId, 'registrationId chega ao banco');
+  assert.ok(relido.me, 'me chega ao banco');
+  console.log('   confirmado: a sessao gravada tem as chaves que o handshake exige');
+
   console.log('\nTodos os passos passaram.');
 } finally {
   await limpar();
