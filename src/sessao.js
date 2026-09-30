@@ -236,6 +236,13 @@ export const sessao = {
           qrAtual = null;
           aberto = false;
           numeroAtual = null;
+          // Zera tambem o "conectado desde". Sem isto, o painel mostrava uma
+          // data de conexao logo abaixo de "desconectado", e a tela dizia que o
+          // numero estava desligado ao mesmo tempo que affirmava desde quando
+          // estava ligado. Duas informacoes que se contradizem, e a
+          // contraditoria e o que fez a administradora achar que o
+          // pareamento tinha funcionado.
+          conectadoDesde = null;
           conexao = null;
           conectando = null;
 
