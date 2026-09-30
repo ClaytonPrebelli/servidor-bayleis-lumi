@@ -217,6 +217,9 @@ try {
   // caminho da gravacao, entao dispara o mesmo evento que o Baileys dispara
   // depois do escaneamento.
   const { sessaoNaApi } = await import('./src/sessao-api.js');
+  // A conexao abriu: e a partir dai que a sessao vale. Sem confirmar, o passo
+  // 11 mostra que nada seria gravado.
+  sessaoNaApi.confirmar();
   sessaoNaApi.marcarCredenciaisAlteradas({ noiseKey: 'abc', me: { id: '5511999999999' } });
   await sessaoNaApi.gravar();
 
@@ -392,6 +395,53 @@ try {
   assert.ok(relido.registrationId, 'registrationId chega ao banco');
   assert.ok(relido.me, 'me chega ao banco');
   console.log('   confirmado: a sessao gravada tem as chaves que o handshake exige');
+
+  console.log('== 11. tentativa que nunca abre nao grava sessao ==');
+  // O log do Render mostrava "Sessao gravada, versao: 3" e, um segundo
+  // depois, "Conexao caiu, codigo: 515". Cada leitura de QR deixava uma sessao
+  // no banco mesmo tendo falhado, e a tentativa seguinte recarregava uma
+  // identidade que o WhatsApp ja tinha recusado.
+  //
+  // Sessao que nunca abriu nao e sessao: e rascunho, e rascunho nao vai para o
+  // banco.
+  const { SessaoNaApi } = await import('./src/sessao-api.js');
+  const rascunho = new SessaoNaApi();
+
+  assert.equal(rascunho.foiConfirmada(), false, 'comeca nao confirmada');
+
+  rascunho.paraBaileys();
+  rascunho.marcarCredenciaisAlteradas({ me: { id: '5515999999999:1@s.whatsapp.net' } });
+
+  assert.equal(rascunho.credenciaisAlteradas, true, 'a mudanca fica em memoria');
+  assert.equal(rascunho.timer, null, 'mas nao agendou gravacao: sem timer pendente');
+  console.log('   confirmado: rascunho nao agendou gravacao');
+
+  console.log('== 12. tentativa que cai sem abrir e descartada ==');
+  rascunho.descartarRascunho();
+
+  assert.equal(rascunho.credenciais, null, 'a identidade do rascunho foi embora');
+  assert.equal(rascunho.credenciaisAlteradas, false, 'nada pendente');
+  assert.equal(rascunho.foiConfirmada(), false, 'continua nao confirmada');
+
+  // A proxima tentativa precisa comecar do zero, e nao reaproveitar o que o
+  // WhatsApp recusou.
+  rascunho.paraBaileys();
+  assert.ok(rascunho.credenciais.noiseKey, 'a nova tentativa gera chaves novas');
+  console.log('   confirmado: a proxima tentativa comeca do zero');
+
+  console.log('== 13. sessao confirmada e a que vai para o banco ==');
+  const confirmada = new SessaoNaApi();
+
+  confirmada.paraBaileys();
+  assert.equal(confirmada.confirmar(), true, 'a primeira confirmacao e a que importa');
+  assert.equal(confirmada.confirmar(), false, 'confirmar de novo nao e a primeira vez');
+
+  assert.equal(confirmada.foiConfirmada(), true, 'confirmada');
+  assert.equal(confirmada.podeGravar(), true, 'pode ir para o banco');
+
+  confirmada.marcarCredenciaisAlteradas({ me: { id: '5515999999999:1@s.whatsapp.net' } });
+  assert.notEqual(confirmada.timer, null, 'a sessao confirmada agenda a gravacao');
+  console.log('   confirmado: sessao aberta agenda gravacao');
 
   console.log('\nTodos os passos passaram.');
 } finally {

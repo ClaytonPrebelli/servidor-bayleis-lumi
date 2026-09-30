@@ -198,11 +198,65 @@ export class SessaoNaApi {
    * signalIdentityKey na primeira atualizacao parcial, e a sessao gravada ficava
    * sem as chaves de que o handshake precisa. O sintoma era o servico cair a
    * cada 3 segundos, sem QR nunca.
+   *
+   * A gravacao so agenda se a conexao ja foi confirmada. Antes disso, o que
+   * chega aqui e rascunho de uma tentativa, e rascunho nao vai para o banco:
+   * cada leitura de QR deixava uma sessao gravada mesmo tendo falhado, e a
+   * tentativa seguinte recarregava uma identidade que nunca funcionou.
    */
   marcarCredenciaisAlteradas(alteracoes) {
     this.credenciais = { ...(this.credenciais ?? {}), ...(alteracoes ?? {}) };
     this.credenciaisAlteradas = true;
-    this.marcarGravacao();
+
+    if (this.podeGravar()) {
+      this.marcarGravacao();
+    }
+  }
+
+  /**
+   * Decida se a sessao atual pode ir para o banco.
+   *
+   * Base e uma funcao externa porque o estado da conexao vive no sessao.js, e
+   * a sessao-api nao deve conhecer esse detalhe.
+   */
+  podeGravar() {
+    return this.foiConfirmada();
+  }
+
+  /** A sessao foi marcada como confirmada pela conexao aberta. */
+  foiConfirmada() {
+    return this._confirmada === true;
+  }
+
+  /**
+   * A conexao abriu de verdade: a partir daqui a sessao vale e vai para o banco.
+   */
+  confirmar() {
+    const primeiraVez = this._confirmada !== true;
+
+    this._confirmada = true;
+
+    return primeiraVez;
+  }
+
+  /**
+   * A tentativa nao chegou a abrir: o rascunho e descartado.
+   *
+   * Sem isto, a proxima tentativa recomecaria a partir de uma identidade que o
+   * WhatsApp ja recusou, e o 408 de conflito se repetiria. Comecar do zero e o
+   * que devolve a chance de parear.
+   */
+  descartarRascunho() {
+    this._confirmada = false;
+    this.credenciais = null;
+    this.credenciaisAlteradas = false;
+    this.chavesAlteradas.clear();
+    this.chavesRemovidas.clear();
+
+    if (this.timer !== null) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
   }
 
   /**
@@ -236,6 +290,12 @@ export class SessaoNaApi {
    */
   async gravar() {
     if (this.gravando || !this.credenciais) {
+      return;
+    }
+
+    // Trava final, aqui e nao so no agendamento: e o ultimo ponto onde um
+    // rascunho poderia escapar para o banco.
+    if (!this.podeGravar()) {
       return;
     }
 

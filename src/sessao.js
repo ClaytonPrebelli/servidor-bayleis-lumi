@@ -227,7 +227,20 @@ export const sessao = {
           reconnectando = 0;
           numeroAtual = numeroDoJid(socket.user?.id);
           conectadoDesde = new Date().toISOString();
-          registrar('info', 'Numero pareado e conectado.', { numero: numeroAtual });
+          // A sessao so passa a valer aqui. Ate abrir, tudo o que o Baileys
+          // mandou era rascunho de uma tentativa - e gravar rascunho enchia o
+          // banco de sessoes que nunca funcionaram.
+          const primeiraConexao = sessaoNaApi.confirmar();
+
+          registrar('info', 'Numero pareado e conectado.', { numero: numeroAtual, primeiraConexao });
+
+          if (primeiraConexao) {
+            // Garante que a sessao confirmada va para o banco logo, e nao daqui a
+            // dois minutos: se o Render adormecer ou o processo morrer antes, a
+            // loja ainda teria de escanear QR de novo.
+            sessaoNaApi.marcarGravacao();
+          }
+
           return;
         }
 
@@ -245,6 +258,21 @@ export const sessao = {
           conectadoDesde = null;
           conexao = null;
           conectando = null;
+
+          // Tentativa que nunca abriu deixa so um rascunho de identidade.
+          // Guardar no banco fazia a tentativa seguinte recomecar de algo que o
+          // WhatsApp ja recusou, e o 408 de conflicto se repetir. O 515 tem a
+          // mesma origem: o servidor pediu reinicio porque a sessao do lado
+          // dele nao fechou.
+          //
+          // O que distingue as duas situacoes e`foiConfirmada()`: sessao
+          // confirmada se reconecta, rascunho se descarta.
+          if (!sessaoNaApi.foiConfirmada()) {
+            sessaoNaApi.descartarRascunho();
+
+            registrar('aviso', 'A sessao nao chegou a abrir e foi descartada. A proxima tentativa comeca do zero.');
+          }
+
 
           // 401 e o codigo do WhatsApp para "desconectado de proposito", e nao
           // um erro. Tratar como falha derrubaria o servico a cada restart.
