@@ -34,6 +34,14 @@ let conectando = null;
  */
 let reconnectando = 0;
 
+/**
+ * Quando foi iniciada a ultima conexao, para a trava de intervalo.
+ *
+ * Existe por causa do botao "Gerar novo QR": sem trava, cada clique criava uma
+ * conexao e o WhatsApp passava a recusar o numero.
+ */
+let ultimoInicioDeConexao = 0;
+
 const numeroDoJid = jid => (jid ? jid.split('@')[0] : null);
 
 /**
@@ -267,6 +275,49 @@ export const sessao = {
     }
 
     return QRCode.toDataURL(qrAtual, { margin: 1, width: 320 });
+  },
+
+  /**
+   * Forca uma nova tentativa de conexao agora.
+   *
+   * Zera a espera crescente e derruba a conexao atual, se houver. Sem isso, o
+   * botao "Gerar novo QR" da tela so releria o QR atual - e na janela entre uma
+   * tentativa e outra nao existe socket, entao nao existiria QR para reler.
+   *
+   * A trava de intervalo protege o numero. Criar uma conexao por clique e o
+   * caminho curto para o WhatsApp recusar o pareamento, que foi o que aconteceu
+   * com a reconexao fixa de 3 segundos.
+   */
+  reconectar(intervaloMinimoEmSegundos = 20) {
+    const agoraEmSegundos = Math.round(Date.now() / 1000);
+    const ultimo = Date.now() / 1000 - (ultimoInicioDeConexao ?? 0);
+
+    if (ultimoInicioDeConexao && ultimo < intervaloMinimoEmSegundos) {
+      return {
+        qr: qrAtual,
+        aguardandoSegundos: Math.ceil(intervaloMinimoEmSegundos - ultimo)
+      };
+    }
+
+    ultimoInicioDeConexao = agoraEmSegundos;
+    reconnectando = 0;
+
+    // Derruba a conexao pendente, se houver. O handler de 'close' agenda a
+    // reconexao; zerar o contador antes garante a espera curta.
+    if (conexao) {
+      try {
+        conexao.end(null);
+      } catch {
+        // A conexao pode ja estar morta. O 'close' faz o resto.
+      }
+    } else {
+      conectando = null;
+      sessao.iniciar().catch(erro => {
+        registrar('erro', 'Falha ao forcar reconexao.', { erro: String(erro) });
+      });
+    }
+
+    return { qr: qrAtual, aguardandoSegundos: 0 };
   }
 };
 

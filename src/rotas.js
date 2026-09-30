@@ -88,3 +88,32 @@ rotas.get('/pareamento', verificarSegredo, async (_req, res) => {
 
   res.json({ pareado: false, qr });
 });
+
+/**
+ * /pareamento/reconectar - força uma nova tentativa de conexão.
+ *
+ * Existe porque o botao "Gerar novo QR" da tela precisa fazer o que promete.
+ * O GET /pareamento so relê o QR atual, e entre uma tentativa e outra nao ha
+ * socket nenhum: a espera cresce para nao martelar o WhatsApp, e nesse intervalo
+ * nao existe QR para ler. Quem clicasse no botao ficaria olhando para a mesma
+ * tela, achando que a tela quebrou.
+ *
+ * Com esta rota, o clique vira uma tentativa de verdade.
+ *
+ * A trava de intervalo e o que impede que o botao vire martelo. Sem ela, cada
+ * clique criaria uma conexao e o WhatsApp passaria a recusar a conta - que foi
+ * exatamente o que aconteceu com a reconexao fixa de 3 segundos.
+ */
+rotas.post('/pareamento/reconectar', verificarSegredo, async (_req, res) => {
+  if (sessao.estaConectado()) {
+    return res.json({ pareado: true, numero: sessao.numeroConectado(), qr: null });
+  }
+
+  const resultado = sessao.reconectar();
+
+  res.json({
+    pareado: false,
+    qr: resultado.qr,
+    aguardandoSegundos: resultado.aguardandoSegundos
+  });
+});
