@@ -165,25 +165,73 @@ export class SessaoNaApi {
       // criar o socket, e o handshake Noise precisa do noiseKey.
       creds: this.credenciais,
 
+      /**
+       * CONTRATO DE LOTE, E NAO DE CHAVE UNICA
+       *
+       * O Baileys 6.7 fala com o armazenamento em pacote: pede varias chaves de
+       * uma vez e devolve varias de uma vez. A interface e'
+       *
+       *   get(tipo, ids)  ->  { [id]: valor }
+       *   set({ tipo: { [id]: valor } })
+       *
+       * A versao antiga deste metodo aceitava `get(tipo, id)` devolvendo um
+       * valor solto e `set(tipo, id, valor)`. Com o contrato velho em cima do
+       * Baileys novo, nada quebrava alto: o `set` recebia o pacote inteiro
+       * como se fosse o `tipo` e gravava a chave "[object Object]:undefined",
+       * e o `get` recebia um array no lugar do id e devolvia `undefined` para
+       * toda leitura.
+       *
+       * O pre-key sumia, o handshake nao fechava, e o sintoma era a conexao
+       * caindo em segundos e o numero nunca pareando - coisa que parece
+       * problema de rede ou de servidor, e nao e.
+       *
+       * Aparece em `libsignal.js` do proprio Baileys:
+       *
+       *   const { [keyId]: key } = await keys.get('pre-key', [keyId]);
+       *   await keys.set({ session: { [id]: ... } });
+       */
       keys: {
-        get: async (tipo, id) => {
-          return this.chaves.get(`${tipo}:${id}`);
-        },
+        get: async (tipo, ids) => {
+          const encontradas = {};
 
-        set: async (tipo, id, valor) => {
-          this.chaves.set(`${tipo}:${id}`, valor);
-          this.chavesAlteradas.add(`${tipo}:${id}`);
-          this.chavesRemovidas.delete(`${tipo}:${id}`);
-          this.marcarGravacao();
-        },
+          for (const id of ids) {
+            const valor = this.chaves.get(`${tipo}:${id}`);
 
-        clear: async () => {
-          for (const chave of this.chaves.keys()) {
-            this.chavesRemovidas.add(chave);
+            // So devolve o que existe. Chave ausente e o jeito do Baileys
+            // dizer "ainda nao tenho esta": devolve-la como null faria o
+            // destructuring destravar e o Signal tentar decifrar com nada.
+            if (valor !== undefined) {
+              encontradas[id] = valor;
+            }
           }
 
-          this.chaves.clear();
-          this.chavesAlteradas.clear();
+          return encontradas;
+        },
+
+        set: async pacote => {
+          for (const tipo of Object.keys(pacote)) {
+            for (const id of Object.keys(pacote[tipo])) {
+              const valor = pacote[tipo][id];
+              const chave = `${tipo}:${id}`;
+
+              // null e o Baileys dizendo "apague esta chave". E assim que o
+              // pre-key consumido sai do caminho, e o que mantem o
+              // armazenamento do tamanho do numero de mensagens, e nao do
+              // tamanho da conversa inteira.
+              if (valor === null || valor === undefined) {
+                this.chaves.delete(chave);
+                this.chavesRemovidas.add(chave);
+                this.chavesAlteradas.delete(chave);
+
+                continue;
+              }
+
+              this.chaves.set(chave, valor);
+              this.chavesAlteradas.add(chave);
+              this.chavesRemovidas.delete(chave);
+            }
+          }
+
           this.marcarGravacao();
         }
       }
@@ -214,13 +262,40 @@ export class SessaoNaApi {
   }
 
   /**
+   * O WhatsApp ja aceitou o numero e entregou a identidade dele.
+   *
+   * E o `me.id` das credenciais, que o Baileys preenche em
+   * `configureSuccessfulPairing` no exato instante em que o celular escaneia o
+   * QR. `initAuthCreds` nao cria `me`, entao a ausencia dele significa que o
+   * pareamento nao chegou a acontecer.
+   *
+   * Existe separada de `foiConfirmada()` porque as duas coisas acontecem em
+   * momentos diferentes, e o intervalo entre elas e' justamente onde o
+   * pareamento se perdia.
+   */
+  temIdentidade() {
+    return Boolean(this.credenciais?.me?.id);
+  }
+
+  /**
    * Decida se a sessao atual pode ir para o banco.
    *
    * Base e uma funcao externa porque o estado da conexao vive no sessao.js, e
    * a sessao-api nao deve conhecer esse detalhe.
+   *
+   * VALE QUANDO O NUMERO JA EXISTE, E NAO SO QUANDO A CONEXAO ABRIU
+   *
+   * O `pair-success` faz o Baileys entregar as credenciais com o `me.id` e,
+   * logo em seguida, o servidor manda reiniciar a conexao (515). A conexao
+   * so marca `confirmar()` no `open`, que vem DEPOIS desse reinicio.
+   *
+   * Entre um evento e outro, `foiConfirmada()` era falso. Com a trava aqui, o
+   * pareamento que dera certo nao ia para o banco e era descartado como
+   * rascunho: o celular escaneava, o WhatsApp aceitava, e o servico voltava a
+   * pedir QR. Era o que o celular nunca conseguia conectar.
    */
   podeGravar() {
-    return this.foiConfirmada();
+    return this.foiConfirmada() || this.temIdentidade();
   }
 
   /** A sessao foi marcada como confirmada pela conexao aberta. */
@@ -307,10 +382,23 @@ export class SessaoNaApi {
 
     const { urlDaApi, segredo } = configuracao();
 
-    const alterados = {};
+    /**
+     * O PACOTE INTEIRO, E NAO SO O QUE MUDOU NESTA RODADA
+     *
+     * A API substitui o blob de chaves inteiro a cada gravacao
+     * (`RepositorioDeSessaoWhatsApp` faz `sessao.Chaves = chaves`), e nao
+     * mescla. Mandar so o delta apagava tudo o que ja estava gravado: o banco
+     * terminava com as ultimas chaves e o resto sumia a cada gravacao.
+     *
+     * O custo e o mesmo das credenciais, que ja iam inteiras: algumas centenas
+     * de entradas pequenas, uma gravacao a cada dois minutos. E o que mantem a
+     * sessao util depois de um sono do servico, que e o motivo dela estar no
+     * banco.
+     */
+    const pacote = {};
 
-    for (const chave of this.chavesAlteradas) {
-      alterados[chave] = this.chaves.get(chave);
+    for (const [chave, valor] of this.chaves) {
+      pacote[chave] = valor;
     }
 
     try {
@@ -320,7 +408,7 @@ export class SessaoNaApi {
         body: JSON.stringify({
           versaoEsperada: this.versao,
           credenciais: serializarCredenciais(this.credenciais),
-          chaves: serializarChaves(alterados)
+          chaves: serializarChaves(pacote)
         })
       });
 
@@ -347,7 +435,7 @@ export class SessaoNaApi {
       this.chavesAlteradas.clear();
       this.chavesRemovidas.clear();
 
-      registrar('info', 'Sessao gravada.', { versao: this.versao, chaves: Object.keys(alterados).length });
+      registrar('info', 'Sessao gravada.', { versao: this.versao, chaves: Object.keys(pacote).length });
     } finally {
       this.gravando = false;
     }

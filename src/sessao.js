@@ -259,23 +259,12 @@ export const sessao = {
           conexao = null;
           conectando = null;
 
-          // Tentativa que nunca abriu deixa so um rascunho de identidade.
-          // Guardar no banco fazia a tentativa seguinte recomecar de algo que o
-          // WhatsApp ja recusou, e o 408 de conflicto se repetir. O 515 tem a
-          // mesma origem: o servidor pediu reinicio porque a sessao do lado
-          // dele nao fechou.
-          //
-          // O que distingue as duas situacoes e`foiConfirmada()`: sessao
-          // confirmada se reconecta, rascunho se descarta.
-          if (!sessaoNaApi.foiConfirmada()) {
-            sessaoNaApi.descartarRascunho();
-
-            registrar('aviso', 'A sessao nao chegou a abrir e foi descartada. A proxima tentativa comeca do zero.');
-          }
-
-
           // 401 e o codigo do WhatsApp para "desconectado de proposito", e nao
           // um erro. Tratar como falha derrubaria o servico a cada restart.
+          //
+          // Fica antes do resto de proposito: e o unico desfecho em que a
+          // sessao do banco tem mesmo de sumir. Todos os outros pedem
+          // reconectar, nao apagar.
           if (ultimoCodigoDeDesconexao === DisconnectReason.loggedOut) {
             // Apaga a sessao do banco. Sem isso o Node ficaria tentando
             // reconectar com credenciais que a Meta invalidou, e nem QR nem
@@ -284,6 +273,34 @@ export const sessao = {
 
             registrar('erro', 'Numero desconectado do WhatsApp. Pareie de novo com o QR; se nao funcionar, o numero pode estar banido.');
             return;
+          }
+
+          // GRAVAR ANTES DE RECONECTAR, E NAO DEPOIS
+          //
+          // A reconexao daqui recarrega a sessao do banco e sobrescreve o que
+          // esta em memoria. Se o que o WhatsApp acabou de entregar ainda
+          // estiver so na memoria, ele se perde: a gravacao normal espera dois
+          // minutos, e a reconexao chega em segundos.
+          //
+          // E este o instante do `pair-success`: o WhatsApp entregou o `me.id`
+          // e mandou reiniciar a conexao para aplicar o numero novo. Sem esta
+          // gravacao immediate, o pareamento dava certo e era jogado fora - o
+          // celular escaneava, o servico pedia QR de novo, e o ciclo se
+          // repetia para sempre. Era o que o celular nunca conseguia conectar.
+          await sessaoNaApi.gravarPendentes().catch(erro => {
+            registrar('erro', 'Falha ao gravar a sessao antes de reconectar.', { erro: String(erro) });
+          });
+
+          // Tentativa que nunca chegou a ter numero deixa so um rascunho de
+          // identidade. Descartar apenas nesse caso: uma sessao com `me.id` tem
+          // o pareamento feito, e joga-la fora obrigaria a escanear QR de novo
+          // de um numero que ja estava pareado.
+          if (!sessaoNaApi.podeGravar()) {
+            sessaoNaApi.descartarRascunho();
+
+            registrar('aviso', 'A sessao nao chegou a abrir e foi descartada. A proxima tentativa comeca do zero.');
+          } else if (sessaoNaApi.temIdentidade()) {
+            registrar('info', 'O numero ja esta pareado. Gravado e reconectando com ele.');
           }
 
           agendarReconexao();

@@ -240,7 +240,20 @@ try {
   console.log('   servico de volta no ar');
 
   console.log('== 5. a sessao foi restaurada do banco, e nao gerada QR ==');
-  await espera(() => saida.includes('Sessao carregada do banco'), 'sessao lida do banco');
+  // As duas linhas de log sao escritas sem nenhuma espera entre elas, mas
+  // chegam pelo pipe em pedacos e o verificador deste teste roda a cada 100 ms.
+  // Conferir a segunda logo apos a primeira reprovava de vez em quando sem que
+  // nada estivesse quebrado. Aqui a espera e explicita, e o erro traz o log
+  // inteiro, que e o que costuma bastar para descobrir a causa real.
+  try {
+    await espera(
+      () => saida.includes('Sessao restaurada do banco') || saida.includes('Nenhuma sessao no banco'),
+      'sessao restaurada do banco'
+    );
+  } catch (erro) {
+    throw new Error(`${erro.message}\n--- log do servico ---\n${saida}`);
+  }
+
   assert.ok(saida.includes('Sessao restaurada do banco'), 'nao virou QR, virou sessao restaurada');
   assert.ok(!saida.includes('Nenhuma sessao no banco'), 'nao pediu QR de novo');
   console.log('   confirmado: sessao restaurada, nenhum QR novo');
@@ -376,7 +389,10 @@ try {
   assert.ok(sessaoNova.credenciais.noiseKey, 'noiseKey inicial tem de estar guardado');
   assert.ok(sessaoNova.credenciais.signedPreKey, 'signedPreKey inicial tem de estar guardado');
   assert.ok(sessaoNova.credenciais.signedIdentityKey, 'signedIdentityKey inicial tem de estar guardado');
-  assert.ok(sessaoNova.credenciais.registrationId, 'registrationId inicial tem de estar guardado');
+  // `!== undefined`, e nao truthiness: o Baileys sorteia o registrationId em
+  // 0..16383, e zero e um valor legitimo. Com truthiness este passo reprovava
+  // uma vez a cada 16384 execucoes, sem que nada estivesse errado.
+  assert.notEqual(sessaoNova.credenciais.registrationId, undefined, 'registrationId inicial tem de estar guardado');
   console.log('   confirmado: as chaves base foram guardadas');
 
   const ruido = sessaoNova.marcarCredenciaisAlteradas({ me: { id: '5515999999999:1@s.whatsapp.net' } });
@@ -402,17 +418,23 @@ try {
   // no banco mesmo tendo falhado, e a tentativa seguinte recarregava uma
   // identidade que o WhatsApp ja tinha recusado.
   //
-  // Sessao que nunca abriu nao e sessao: e rascunho, e rascunho nao vai para o
+// Sessao que nunca abriu nao e sessao: e rascunho, e rascunho nao vai para o
   // banco.
+  //
+  // O marcador de mudanca aqui e `accountSyncCounter`, e nao `me`: o `me.id` e o
+  // que o WhatsApp preenche no `pair-success`, e uma sessao que ja tem numero
+  // TEM de poder ir para o banco mesmo antes da conexao abrir. Usar `me` como
+  // "algo mudou" esconderia justamente o caso que o passo 19 cobre.
   const { SessaoNaApi } = await import('./src/sessao-api.js');
   const rascunho = new SessaoNaApi();
 
   assert.equal(rascunho.foiConfirmada(), false, 'comeca nao confirmada');
 
   rascunho.paraBaileys();
-  rascunho.marcarCredenciaisAlteradas({ me: { id: '5515999999999:1@s.whatsapp.net' } });
+  rascunho.marcarCredenciaisAlteradas({ accountSyncCounter: 1 });
 
   assert.equal(rascunho.credenciaisAlteradas, true, 'a mudanca fica em memoria');
+  assert.equal(rascunho.temIdentidade(), false, 'e o rascunho ainda nao tem numero');
   assert.equal(rascunho.timer, null, 'mas nao agendou gravacao: sem timer pendente');
   console.log('   confirmado: rascunho nao agendou gravacao');
 
@@ -442,6 +464,210 @@ try {
   confirmada.marcarCredenciaisAlteradas({ me: { id: '5515999999999:1@s.whatsapp.net' } });
   assert.notEqual(confirmada.timer, null, 'a sessao confirmada agenda a gravacao');
   console.log('   confirmado: sessao aberta agenda gravacao');
+
+  console.log('== 14. o armazenamento fala o pacote, e nao a chave solta ==');
+  // O defeito que travava o pareamento. O Baileys 6.7 pede varias chaves de
+  // uma vez e devolve varias de uma vez:
+  //
+  //   const { [keyId]: key } = await keys.get('pre-key', [keyId]);
+  //   await keys.set({ session: { [id]: ... } });
+  //
+  // O armazenamento estava com o contrato da versao antiga, que era o inverso:
+  // `get(tipo, id)` devolvendo um valor e `set(tipo, id, valor)`. Com o contrato
+  // velho em cima do Baileys novo, o `set` gravava a chave
+  // "[object Object]:undefined" e o `get` devolvia undefined para toda
+  // leitura. O pre-key sumia, o handshake nao fechava, e o sintoma era a
+  // conexao caindo em segundos: parecia rede, e nao era.
+  const comChaves = new SessaoNaApi();
+  comChaves.confirmar();
+  const { keys: chaves } = comChaves.paraBaileys();
+
+  // Exactamente como o libsignal.js do Baileys chama.
+  await chaves.set({ 'pre-key': { 'abc123': bufferDoNode.from('pre-key-de-teste') } });
+
+  const lidas = await chaves.get('pre-key', ['abc123']);
+
+  assert.equal(
+    typeof lidas,
+    'object',
+    'get tem de devolver um dicionario, e nao um valor solto'
+  );
+  assert.ok(lidas.abc123, 'a chave volta no dicionario, e nao undefined');
+  assert.equal(lidas.abc123.toString(), 'pre-key-de-teste', 'e com o valor certo');
+  console.log('   confirmado: get devolve dicionario e set grava pelo tipo e id');
+
+  console.log('== 15. varias chaves num pacote so, e nao uma por vez ==');
+  // E o que o upload de pre-keys faz: um pacote com dezenas de entradas.
+  const lote = {};
+
+  for (let i = 0; i < 30; i++) {
+    lote[i] = bufferDoNode.from(`pre-key-${i}`);
+  }
+
+  await chaves.set({ 'pre-key': lote });
+
+  const releitura = await chaves.get('pre-key', Object.keys(lote));
+
+  assert.equal(Object.keys(releitura).length, 30, 'as 30 chaves voltaram');
+  assert.equal(releitura['17'].toString(), 'pre-key-17', 'e na ordem certa');
+  console.log('   confirmado: lote de 30 chaves gravado e lido inteiro');
+
+  console.log('== 16. chave que o Baileys manda apagar some mesmo ==');
+  // O Baileys apaga pre-key consumido com `set({ 'pre-key': { [id]: null } })`.
+  // Se null fosse guardado como valor, o Signal tentaria decifrar com ele.
+  await chaves.set({ 'pre-key': { 'abc123': null } });
+
+  const depoisDeApagar = await chaves.get('pre-key', ['abc123']);
+
+  assert.equal(
+    depoisDeApagar.abc123,
+    undefined,
+    'a chave apagada nao aparece no dicionario'
+  );
+  assert.ok(!comChaves.chaves.has('pre-key:abc123'), 'e some do armazenamento interno');
+  console.log('   confirmado: null apaga a chave, em vez de guardar null');
+
+  console.log('== 17. as chaves sobrevivem a ida e volta pelo banco ==');
+  // O ponto que justifica a sessao estar no banco: o servico dorme, acorda, e
+  // tem que voltar com as chaves de sinal. As credenciais ja tinham este
+  // teste; as chaves nao, e eram exatamente as que sumiam.
+  const { serializarChaves, lerChaves } = await import('./src/sessao-api.js');
+
+  const chavesNoBanco = serializarChaves(releitura);
+  const chavesVoltas = lerChaves(chavesNoBanco);
+
+  assert.equal(Object.keys(chavesVoltas).length, 30, 'as 30 chaves voltaram do banco');
+  assert.ok(Buffer.isBuffer(chavesVoltas['7']), 'e voltaram como Buffer, nao como objeto');
+  assert.equal(chavesVoltas['7'].toString(), 'pre-key-7', 'com os bytes intactos');
+  console.log('   confirmado: as chaves de sinal sobreviveram ao banco');
+
+  console.log('== 18. gravacao manda o pacote inteiro, e nao so o delta ==');
+  // A API substitui o blob de chaves inteiro a cada gravacao
+  // (`RepositorioDeSessaoWhatsApp` faz `sessao.Chaves = chaves`) e nao mescla.
+  // Mandar so o que mudou nesta rodada apagava o resto: o banco terminava com
+  // as ultimas chaves e as anteriores sumiam a cada gravacao. Era a mesma
+  // falha da sessao, so que silenciosa - e era o que impedia a sessao de
+  // sobreviver a um sono do servico.
+  let pacoteRecebido = null;
+  const apiQueSubstitui = createServer((req, res) => {
+    if (req.method !== 'POST') {
+      res.writeHead(405).end();
+
+      return;
+    }
+
+    let corpo = '';
+    req.on('data', parte => (corpo += parte));
+    req.on('end', () => {
+      pacoteRecebido = JSON.parse(JSON.parse(corpo).chaves);
+
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ gravado: true, versao: 1 }));
+    });
+  });
+
+  const portaDoSubstituto = 3195;
+  await new Promise(resolve => apiQueSubstitui.listen(portaDoSubstituto, '127.0.0.1', resolve));
+
+  const processoAnterior = process.env.URL_DA_API;
+  process.env.URL_DA_API = `http://127.0.0.1:${portaDoSubstituto}`;
+
+  const paraGravar = new SessaoNaApi();
+  paraGravar.confirmar();
+  const { keys: chavesParaGravar } = paraGravar.paraBaileys();
+
+  // Duas rodadas de gravacao, como o servico faz a cada dois minutos.
+  await chavesParaGravar.set({ 'pre-key': { a: bufferDoNode.from('a') } });
+  await paraGravar.gravar();
+
+  await chavesParaGravar.set({ 'pre-key': { b: bufferDoNode.from('b') } });
+  await paraGravar.gravar();
+
+  assert.equal(
+    Object.keys(pacoteRecebido).length,
+    2,
+    'a segunda gravacao mandou as duas chaves, e nao so a que mudou'
+  );
+  assert.ok(pacoteRecebido['pre-key:a'], 'a chave antiga continua no pacote');
+  assert.ok(pacoteRecebido['pre-key:b'], 'a chave nova entrou no pacote');
+
+  // O agendamento do passo anterior ainda esta de pe; sem isso ele dispara
+  // depois que a API de mentira ja foi fechada e suja o log do teste.
+  if (paraGravar.timer !== null) {
+    clearTimeout(paraGravar.timer);
+    paraGravar.timer = null;
+  }
+
+  apiQueSubstitui.close();
+  process.env.URL_DA_API = processoAnterior;
+  console.log('   confirmado: a gravacao leva o pacote inteiro, nada se perde');
+
+  console.log('== 19. o pareamento feito nao e descartado como rascunho ==');
+  // O defeito que impedia o celular de conectar. No `pair-success` o WhatsApp
+  // entrega as credenciais com o `me.id` e manda reiniciar a conexao (515).
+  // A conexao so chama `confirmar()` no `open`, que vem DEPOIS desse reinicio.
+  //
+  // Entre um evento e outro, `foiConfirmada()` era falso. A sessao era
+  // descartada como rascunho e o que o celular acabou de conquistar se perdia:
+  // o celular escaneava, o WhatsApp aceitava, e o servico voltava a pedir QR.
+  // O sintoma era o celular ficar muito tempo "tentando conectar".
+  const pareada = new SessaoNaApi();
+  pareada.paraBaileys();
+
+  assert.equal(pareada.temIdentidade(), false, 'antes de escanear nao ha identidade');
+  assert.equal(pareada.podeGravar(), false, 'e nao pode ir para o banco');
+
+  // O que o Baileys entrega no pair-success.
+  pareada.marcarCredenciaisAlteradas({
+    me: { id: '5511999999999:1@s.whatsapp.net', name: 'Lumi Makeup' },
+    account: { accountSignatureKey: 'chave' }
+  });
+
+  assert.equal(pareada.temIdentidade(), true, 'o me.id marca o pareamento como feito');
+  assert.equal(
+    pareada.podeGravar(),
+    true,
+    'pareamento feito tem de poder ir para o banco, mesmo antes do open'
+  );
+  assert.notEqual(pareada.timer, null, 'e a gravacao foi agendada na hora');
+  console.log('   confirmado: o me.id libera a gravacao antes da conexao abrir');
+
+  console.log('== 20. o 515 do WhatsApp nao vira perda de pareamento ==');
+  // O 515 e o "restartRequired": o WhatsApp pedindo para a conexao recomecar
+  // com o numero novo. Tratar isso como falha perdia o pareamento. O que
+  // separa as duas situacoes e ter numero, nao o codigo.
+  const depoisDo515 = new SessaoNaApi();
+  depoisDo515.paraBaileys();
+  depoisDo515.marcarCredenciaisAlteradas({ me: { id: '5511999999999:1@s.whatsapp.net' } });
+
+  // Isto e o que o sessao.js faz no `close`: so descarta quando nao ha numero.
+  if (!depoisDo515.podeGravar()) {
+    depoisDo515.descartarRascunho();
+  }
+
+  assert.equal(
+    depoisDo515.temIdentidade(),
+    true,
+    'com me.id a sessao sobreviveu a queda e ainda esta pareada'
+  );
+  assert.ok(depoisDo515.credenciais.me.id, 'o numero continua nas credenciais');
+  console.log('   confirmado: a queda logo apos o pareamento nao apaga o numero');
+
+  console.log('== 21. tentativa sem numero continua sendo descartada ==');
+  // O outro lado da regra: o que nunca teve numero e rascunho mesmo, e precisa
+  // recomecar do zero para nao herdar uma identidade que o WhatsApp recusou.
+  const semNumero = new SessaoNaApi();
+  semNumero.paraBaileys();
+  semNumero.marcarCredenciaisAlteradas({ registrationId: 4321 });
+
+  assert.equal(semNumero.temIdentidade(), false, 'sem me.id nao ha identidade');
+
+  if (!semNumero.podeGravar()) {
+    semNumero.descartarRascunho();
+  }
+
+  assert.equal(semNumero.credenciais, null, 'a identidade do rascunho foi embora');
+  console.log('   confirmado: sem numero, a tentativa recomeca do zero');
 
   console.log('\nTodos os passos passaram.');
 } finally {
